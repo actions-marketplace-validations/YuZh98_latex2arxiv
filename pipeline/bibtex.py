@@ -1,3 +1,4 @@
+import sys
 from typing import Callable
 
 try:
@@ -34,8 +35,13 @@ _FIELD_ORDER = [
 _PRIVATE_FIELDS = {"abstract", "file", "keywords", "mendeley-tags", "annote"}
 
 
-def normalize_bibtex(source: str, cited_keys: set | None = None, warn_fn: Callable[[str], None] | None = None) -> str:
-    _warn: Callable[[str], None] = warn_fn or (lambda msg: print(f"  [warn] {msg}", file=__import__("sys").stderr))
+def normalize_bibtex(
+    source: str,
+    cited_keys: set | None = None,
+    warn_fn: Callable[[str], None] | None = None,
+    is_biblatex: bool = False,
+) -> str:
+    _warn: Callable[[str], None] = warn_fn or (lambda msg: print(f"  [warn] {msg}", file=sys.stderr))
     if not HAS_BIBTEXPARSER:
         _warn("bibtexparser not installed; skipping BibTeX normalization")
         return source
@@ -54,6 +60,10 @@ def normalize_bibtex(source: str, cited_keys: set | None = None, warn_fn: Callab
         else:
             no_key.append(entry)
 
+    # Strip private fields. biblatex: 'keywords' is functional
+    # (\printbibliography[keyword=...]) — keep it there.
+    private_fields = _PRIVATE_FIELDS - {"keywords"} if is_biblatex else _PRIVATE_FIELDS
+
     unique_entries = []
     for dedup, entries in groups.items():
         if len(entries) == 1:
@@ -69,8 +79,7 @@ def normalize_bibtex(source: str, cited_keys: set | None = None, warn_fn: Callab
             for s in skipped:
                 _warn(f"duplicate entry skipped: {s}")
 
-        # Strip private fields
-        for f in _PRIVATE_FIELDS:
+        for f in private_fields:
             chosen.pop(f, None)
 
         # Reorder fields
@@ -83,6 +92,9 @@ def normalize_bibtex(source: str, cited_keys: set | None = None, warn_fn: Callab
                 ordered[f] = chosen[f]
         unique_entries.append(ordered)
 
+    for entry in no_key:
+        for f in private_fields:
+            entry.pop(f, None)
     unique_entries.extend(no_key)
     db.entries = unique_entries
     writer = BibTexWriter()

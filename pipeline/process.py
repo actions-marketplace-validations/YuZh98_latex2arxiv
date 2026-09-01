@@ -7,8 +7,7 @@ of kept paths plus the list of removed-file display names (used by --json and
 the summary line).
 
 Progress output is emitted via the `log` callable rather than `print` directly
-so the orchestrator can route it (currently `print`; future: logging /
-reporter callback).
+so the orchestrator can route it.
 """
 
 from pathlib import Path
@@ -37,6 +36,7 @@ def _process_files(
     used_image_refs: set[str],
     used_bib_files: set[str],
     cited_keys: set[str],
+    is_biblatex: bool,
     resize: int | None,
     dry_run: bool,
     issues: Issues,
@@ -64,13 +64,13 @@ def _process_files(
                     pass  # keep it
                 else:
                     log(f"  remove: {rel}")
-                    removed_names.append(str(rel))
+                    removed_names.append(rel.as_posix())
                     if not dry_run:
                         path.unlink()
                     continue
             else:
                 log(f"  remove: {rel}")
-                removed_names.append(str(rel))
+                removed_names.append(rel.as_posix())
                 if not dry_run:
                     path.unlink()
                 continue
@@ -106,7 +106,7 @@ def _process_files(
                 log(f"  would process (bib): {rel}")
             else:
                 src = path.read_text(encoding="utf-8", errors="replace")
-                src = normalize_bibtex(src, cited_keys=cited_keys, warn_fn=issues.warn)
+                src = normalize_bibtex(src, cited_keys=cited_keys, warn_fn=issues.warn, is_biblatex=is_biblatex)
                 path.write_text(src, encoding="utf-8")
 
     return kept_files, removed_names

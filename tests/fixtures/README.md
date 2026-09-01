@@ -23,6 +23,12 @@ logic.
 | 07 | `07-fontspec-xelatex/` | `\usepackage{fontspec}` + `\usepackage{unicode-math}`. Tests the XeLaTeX/LuaLaTeX pre-flight `[error]` check. |
 | 08 | `08-flatten-basic/` | `main.tex` with `\input{intro}` and `\include{conclusion}`. Run with `--flatten` to exercise inlining + the `\clearpage` wrap around `\include` bodies. |
 | 09 | `09-flatten-subfile/` | `main.tex` with `\subfile{chapters/ch1}` (subdirectory) and `\subfile{ch2}` (peer). Run with `--flatten` to exercise subfile preamble-stripping and the including-file-relative path resolution for `\subfile`. |
+| 10 | `10-multifile-graphicspath/` | `main.tex` with `\input{sections/intro}`, `\graphicspath{{figures/}}`, and an extension-less `\includegraphics{fig1}`. Tests subdirectory image resolution plus pruning of an unused figure and an unreferenced `.tex`. |
+| 11 | `11-biblatex-bbl/` | biblatex with a shipped `.bbl` at bbl format 3.2. Tests the bbl-version pre-flight warn, `\addbibresource[location=local]` parsing, and `\autocite`/`\textcite` key detection. |
+| 12 | `12-plain-bibtex-natbib/` | Classic BibTeX workflow: natbib `\citep`/`\citet`, `\bibliographystyle{plainnat}`, `\bibliography{refs}`. Exercises the `bibtex` (not biber) dispatch in `--compile` and private-field stripping (`abstract`, `file`) in `.bib` normalization. |
+| 13 | `13-subdir-styles/` | Path-qualified `\usepackage{styles/custom}` with the `.sty` in a subdirectory. Tests the style-file whitelist keeping non-root styles and the "custom style file kept" advisory warn. |
+| 14 | `14-xelatex-00readme/` | `fontspec` + `unicode-math` with a `00README.yaml` declaring `compiler: xelatex`. Tests that the XeLaTeX opt-in suppresses the engine `[error]`s (contrast with 07). `--compile` fails by design — `_compile()` is pdflatex-only (exit code stays 0; compile failures are reported, not fatal). |
+| 15 | `15-archive-layout-warns/` | Hidden `.arxivignore` file and `.notes/` dot-directory. Tests the archive-layout warns (arXiv deletes dot-paths on announcement) and their pruning from the output. |
 
 ## How to run
 
@@ -138,6 +144,12 @@ shipped recently:
 - **#03** mirrors the bundled `pipeline/demo_project.zip` at smaller scale, kept here so the demo can evolve without losing the "config UX" canonical example. Uses the `changes` package rather than inline `\newcommand` to avoid the [definition-mangling caveat](../../arxiv_config.yaml).
 - **#04** guards against a regression in the main-tex ranking from PR #42 — without it, `Supplementary_Materials.tex` could win.
 - **#05** is the "can I see what the tool actually surfaces?" demo. Useful for screenshots, README copy, and validating new pre-flight checks don't silently overlap.
+- **#10** guards the `\graphicspath` + extension-less `\includegraphics` resolution path — a subdirectory figure that resolve-failures would silently drop.
+- **#11** locks in the biblatex `.bbl` handling from PR #227: the bbl-format-version pre-flight warn, `\addbibresource[options]{...}` parsing, and `keywords` preservation for biblatex projects.
+- **#12** covers the classic natbib+BibTeX workflow the biblatex fixtures don't: the `bibtex` branch of the compile dispatch and private-field stripping without the biblatex `keywords` carve-out.
+- **#13** locks in the subdirectory style-file whitelisting from PR #236 — before it, a used `styles/custom.sty` was silently pruned and the arXiv build broke.
+- **#14** is the suppression counterpart to #07: the same fontspec preamble, made legitimate by a `00README` XeLaTeX opt-in (PR #177).
+- **#15** locks in the archive-layout warns and the per-dot-directory dedup from PR #229.
 
 ## Adding a new fixture
 
@@ -211,3 +223,84 @@ brief note in the "Why" section.
     root. If `chapters/ch1.tex` is not inlined, the
     including-file-relative path semantic for `\subfile` has
     regressed.
+
+### 10-multifile-graphicspath
+
+- **Kept:** `main.tex`, `sections/intro.tex`, `figures/fig1.pdf` (3 files).
+- **Removed:** `spare_notes.tex`, `figures/unused_diagram.pdf` (2 files).
+- **Errors / warnings:** 0 / 0.
+- **Regression anchor:** if `figures/fig1.pdf` is removed, the
+  `\graphicspath` + extension-less `\includegraphics{fig1}` resolution in
+  `pipeline/deps.py:find_used_images` has regressed; if `spare_notes.tex`
+  or `unused_diagram.pdf` survive, pruning has regressed.
+
+### 11-biblatex-bbl
+
+- **Kept:** `main.tex`, `refs.bib`, `main.bbl` (3 files).
+- **Removed:** none.
+- **Errors:** 0. **Warnings:** 1.
+  - `main.bbl is bbl format 3.2 — accepted only if you select TeX Live 2023 (TL2023) at submission ...`
+- **Cleaned-source notes:** `keywords` survives in `refs.bib` (functional
+  for biblatex; stripped only for plain BibTeX projects).
+- **Regression anchor:** if the warning disappears, the bbl-format-version
+  check in `pipeline/preflight.py` has regressed; if `main.bbl` or
+  `refs.bib` is pruned, the biblatex whitelist handling (incl.
+  `\addbibresource[options]{...}` parsing) has regressed. CI pins the
+  1-warning row in `fixtures-smoke` (`.github/workflows/test.yml`).
+
+### 12-plain-bibtex-natbib
+
+- **Kept:** `main.tex`, `refs.bib` (2 files).
+- **Removed:** none.
+- **Errors / warnings:** 0 / 0.
+- **Cleaned-source notes:** the private `abstract` and `file` fields are
+  stripped from both `refs.bib` entries (this is a plain-BibTeX project, so
+  no `keywords` carve-out applies — contrast fixture 11).
+- **`--compile` mode:** `Running bibtex ...` (not biber) should appear and a
+  PDF with a resolved `plainnat` bibliography should be produced.
+- **Regression anchor:** if `Running biber` appears instead, the
+  `uses_biblatex()` dispatch in `pipeline/build.py` has regressed; if
+  `abstract`/`file` survive in the output `refs.bib`, private-field
+  stripping in `pipeline/bibtex.py` has regressed.
+
+### 13-subdir-styles
+
+- **Kept:** `main.tex`, `styles/custom.sty` (2 files).
+- **Removed:** none.
+- **Errors:** 0. **Warnings:** 1.
+  - `custom style file kept: styles/custom.sty — arXiv may suggest removing this; ignore that warning, the file is required for compilation`
+- **Regression anchor:** if `styles/custom.sty` shows up under `remove:`,
+  the path-qualified style whitelisting in `converter.py` has regressed —
+  keeping used `.sty`/`.cls` files outside the zip root (both basename and
+  `\usepackage{styles/custom}` path-qualified references) was the fix
+  shipped in PR #236. CI pins the 1-warning row in `fixtures-smoke`.
+
+### 14-xelatex-00readme
+
+- **Kept:** `main.tex`, `00README.yaml` (2 files).
+- **Removed:** none.
+- **Errors / warnings:** 0 / 0.
+- **Regression anchor:** if the `fontspec` / `unicode-math` `[error]` lines
+  from fixture 07 appear here, the `00README` `compiler: xelatex` opt-in
+  (`_has_xelatex_mode` in `pipeline/preflight.py`) has regressed — this
+  fixture is the suppression counterpart to 07's error case.
+- **`--compile` mode:** fails by design — `_compile()` runs pdflatex only,
+  and fontspec aborts under pdfTeX. The compile failure is reported but does
+  not change the exit code, so the runner still counts this fixture as
+  clean. A future xelatex dispatch in `_compile()` should flip this into a
+  real PDF; update this note when that lands.
+
+### 15-archive-layout-warns
+
+- **Kept:** `main.tex` (1 file).
+- **Removed:** `.arxivignore`, `.notes/scratch.txt` (2 files).
+- **Errors:** 0. **Warnings:** 2.
+  - `hidden file or directory: .arxivignore — arXiv deletes paths starting with '.' upon announcement ...`
+  - `hidden file or directory: .notes/scratch.txt — ...`
+- **Regression anchors:** if either warning disappears, the pre-prune
+  archive-layout scan in `pipeline/preflight.py:_check_archive_layout` has
+  regressed. The warns dedup per dot-component (one warn for the whole
+  `.notes/` tree, however many files it contains — the fix shipped in
+  PR #229); if adding a second file under `.notes/` ever produces a third
+  warning, that dedup has regressed. CI pins the 2-warning row in
+  `fixtures-smoke`.

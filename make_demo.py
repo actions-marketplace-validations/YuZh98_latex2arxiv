@@ -34,7 +34,7 @@ files["main.tex"] = r"""\documentclass[12pt]{article}
 \begin{abstract}
 \texttt{latex2arxiv} converts a LaTeX \texttt{.zip} project into an arXiv-ready
 \texttt{.zip} in one command. On a real statistics paper it took
-\textbf{950 files / 82\,MB} down to \textbf{40 files / 3\,MB} in seconds.
+\textbf{934 files / 80.6\,MB} down to \textbf{40 files / 3.1\,MB} in seconds.
 This document is the bundled demo. Run it with:
 \begin{verbatim}
 latex2arxiv --demo --compile --guide
@@ -86,7 +86,8 @@ Table~\ref{tab:pruned} lists what was removed from this demo zip.
 \end{table}
 
 Dependency tracking respects \verb|\input|, \verb|\include|, \verb|\subfile|,
-\verb|\includegraphics|, \verb|\graphicspath|, and \verb|\bibliography|.
+\verb|\includegraphics|, \verb|\graphicspath|, \verb|\bibliography|, and
+biblatex's \verb|\addbibresource|.
 Commented-out commands are ignored, so a stray
 \texttt{\% \textbackslash input\{old\_draft\}} will not pull in dead code.
 The used figure (Figure~\ref{fig:example}) is kept because it is referenced.
@@ -142,6 +143,11 @@ requirements. The terminal output uses two severities:
         \texttt{\textbackslash addbibresource} without a
         \texttt{.bbl} shipped — if a referenced \texttt{.bib} is missing,
         arXiv will block your submission. Ship the \texttt{.bbl} as a fallback.
+  \item Shipped \texttt{.bbl} with a stale bbl format version — arXiv accepts
+        bbl format 3.3 under its default TeX Live; a 3.2 file needs the
+        older TeX Live at submission time, which arXiv plans to retire.
+        Regenerate with a current biblatex, or let arXiv run Biber from
+        your \texttt{.bib}.
   \item Output zip $> 50$\,MB — consider \texttt{-{}-resize} or splitting
         supplementary materials.
   \item Filenames with spaces or non-ASCII characters — rename to ASCII.
@@ -153,6 +159,10 @@ requirements. The terminal output uses two severities:
   \item Custom \texttt{.cls} / \texttt{.sty} included — arXiv may suggest
         removing these; ignore that warning, they are required for compilation.
   \item \texttt{.eps} images — \texttt{pdflatex} cannot render them.
+  \item \texttt{fontspec} / \texttt{unicode-math} without a XeLaTeX opt-in —
+        these packages abort under arXiv's default pdfLaTeX. Shipping a
+        \texttt{00README} with \texttt{compiler: xelatex} declares the
+        engine and silences the error.
   \item Undefined citations — \texttt{\textbackslash cite\{key\}} where
         \texttt{key} is not in any kept \texttt{.bib} or \texttt{.bbl} file.
         This demo triggers it intentionally (see \S6).
@@ -259,7 +269,8 @@ files["sections/bibtex.tex"] = r"""
 
 The \texttt{refs.bib} file in this demo contains:
 \begin{itemize}
-  \item A duplicate entry (same DOI) — one copy is removed~\cite{arxiv_submission}
+  \item A duplicate entry (same title) — one copy is removed, with a
+        \texttt{[warn]} naming the skipped key~\cite{arxiv_submission}
   \item Private fields (\texttt{abstract}, \texttt{file}) — stripped before submission
   \item Fields reordered to a canonical format
 \end{itemize}
@@ -267,6 +278,13 @@ The \texttt{refs.bib} file in this demo contains:
 When multiple entries share the same DOI or title, the converter prefers the
 entry whose key is actually cited in the \texttt{.tex} sources, so cleanup
 never breaks a working \verb|\cite{}| command.
+
+biblatex projects get the same treatment with two differences: the citation
+scan understands the biblatex families (\verb|\autocite|, \verb|\textcite|,
+\verb|\footcite|, multicite forms), and the \texttt{keywords} field is kept —
+it is functional there (\verb|\printbibliography[keyword=...]|), not private
+metadata. \texttt{-{}-compile} picks \texttt{biber} or \texttt{bibtex} to
+match your backend automatically.
 
 Install \texttt{bibtexparser} to enable this stage:
 \begin{verbatim}
@@ -298,7 +316,7 @@ Your metadata (copy-paste ready):
     Demo Author
 
   Comments:
-    6 pages, 1 figures, 1 tables
+    8 pages, 1 figures, 1 tables
 
 Step 1: Start a new submission or replace an existing one
 Step 2: Choose license
@@ -333,7 +351,7 @@ files["sections/cli_tools.tex"] = r"""
 
 Every run ends with a one-line summary, for example:
 \begin{verbatim}
-Summary: 6 removed, 11 kept | 0.0 MB → 0.0 MB | 0 errors, 1 warning
+Summary: 7 removed, 10 kept | 0.0 MB → 0.0 MB | 0 errors, 3 warnings
 \end{verbatim}
 Read left to right: file counts (removed/kept), input/output size, then
 issue counts from the pre-flight checks.
@@ -364,7 +382,7 @@ latex2arxiv paper.zip --flatten --compile
 \end{verbatim}
 Inlines every \texttt{\textbackslash input} / \texttt{\textbackslash include} /
 \texttt{\textbackslash subfile} into the main \texttt{.tex}. Useful when arXiv
-has trouble with multi-file projects. See \texttt{docs/flatten.md} for details.
+has trouble with multi-file projects. See \texttt{materials/flatten.md} for details.
 
 \subsection*{\texttt{-{}-json}: machine-readable output}
 
@@ -372,8 +390,17 @@ has trouble with multi-file projects. See \texttt{docs/flatten.md} for details.
 latex2arxiv paper.zip --json 2>/dev/null | jq .counts
 \end{verbatim}
 Emits a JSON summary on stdout (progress goes to stderr). Useful for CI
-pipelines and AI agent integrations. See \texttt{docs/json-schema.md} for the
+pipelines and AI agent integrations. See \texttt{materials/json-schema.md} for the
 schema.
+
+\subsection*{Input formats}
+
+The input does not have to be a zip. A project directory or a git URL works
+the same way:
+\begin{verbatim}
+latex2arxiv path/to/project/ out.zip
+latex2arxiv https://github.com/user/paper out.zip
+\end{verbatim}
 
 \subsection*{\texttt{-{}-demo}: this document}
 
@@ -383,6 +410,10 @@ latex2arxiv --demo --compile --guide
 No input file needed. Locates the bundled \texttt{demo\_project.zip},
 processes it, opens the resulting PDF, and writes an upload guide — what you
 are reading right now.
+
+Beyond the CLI, the same pipeline ships as a VS Code extension, a Chrome
+extension for Overleaf, an MCP server for AI-assistant integration, and a
+GitHub Action for CI.
 """
 
 # ── Unused tex file (should be removed) ───────────────────────────────────────

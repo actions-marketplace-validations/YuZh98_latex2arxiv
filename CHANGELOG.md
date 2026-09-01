@@ -6,6 +6,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · SemVer.
 
 ## [Unreleased]
 
+### Fixed
+- Used `.sty`/`.cls` files in subdirectories are kept instead of pruned
+- Bib entries lacking both DOI and title now get private fields stripped
+- `\citestyle{...}` no longer produces a false undefined-citation warning
+- Commented-out `referee`/`doublespacing`/`\today` lines no longer warn
+- `pdflatex` in `00README.XXX` no longer suppresses the `.eps` warning
+- PNGs above Pillow's decompression-bomb threshold are reported instead of silently skipped
+- Windows: compiled PDF opens via `os.startfile`; zip member names use forward slashes so the upload summary works for subdirectory main files
+- Upload guide footer shows the generating latex2arxiv version and pairs symptoms with the right remedies
+
+## [1.3.1] - 2026-07-09
+
+### Fixed
+- Demo document now states its own run's numbers correctly (file counts, warning count, page count, before/after size, title-dedup wording) and mentions `\addbibresource` in the dependency-tracking list
+
+## [1.3.0] - 2026-07-08
+
+### Added
+- Pre-flight warns when a shipped `.bbl` has a bbl format version arXiv won't accept (3.2 needs the soon-to-retire TL2023; anything else needs regeneration), when a BibTeX-format `.bbl` is paired with a biblatex document, and when a bundled `biblatex.sty` is included in the submission
+
+### Changed
+- Citation scan now recognizes the biblatex cite families (`\autocite`, `\parencite`, `\textcite`, `\footcite`, `\nocite`, capitalized and multicite forms) and pre/post-note optional arguments; the undefined-citation check reads biblatex-format `.bbl` files (`\entry{...}`) in addition to `\bibitem`
+
+### Fixed
+- `\addbibresource[options]{...}` is now recognized by dependency tracking, pre-flight, and the `--compile` biber dispatch; the functional biblatex `keywords` field is no longer stripped from `.bib` files in biblatex projects
+- VS Code extension (0.1.2): the new biblatex pre-flight warnings are located in the editor — `.bbl` format/backend warns anchor the `.bbl` file itself, the bundled-`biblatex.sty` warn anchors the `.sty`
+- Dependency tracking resolves `\input`/`\include` in nested files against the compile root (LaTeX semantics) and keeps non-`.tex` targets such as `.pgf` figures; both were previously pruned from the output (#229)
+- Custom config rules no longer match longer commands sharing a prefix (an `hl` rule used to corrupt `\hline`) (#229)
+- The hidden-file pre-flight warning is emitted once per dot-directory instead of once per contained file (#229)
+
 ## [browser-extension 0.1.11] - 2026-05-29
 
 ### Changed

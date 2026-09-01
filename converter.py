@@ -25,6 +25,7 @@ from pipeline.deps import (
     find_used_bib_files,
     find_used_style_files,
     find_cited_keys,
+    uses_biblatex,
 )
 from pipeline.config import load_config
 from pipeline.images import DEFAULT_MAX_PX
@@ -90,10 +91,6 @@ def convert(
     flatten: bool = False,
     guide: bool = False,
 ) -> Issues:
-    # Normalize the main hint at the pipeline boundary so every front-end
-    # (CLI, MCP, browser, library users) shares one rule: strip whitespace,
-    # drop trailing dots, reject path separators, auto-append `.tex` when
-    # the value carries no extension.
     main_hint = normalize_main_hint(main_hint)
     issues = Issues()
     issues.flatten = flatten
@@ -154,7 +151,9 @@ def convert(
         if main_tex is None:
             raise ConverterError("no .tex file found in archive")
         print(f"  main tex: {main_tex.relative_to(root)}")
-        issues.main_tex = str(main_tex.relative_to(root))
+        # Recorded paths index back into the output zip, whose member names are
+        # always '/'-separated — never the OS separator.
+        issues.main_tex = main_tex.relative_to(root).as_posix()
 
         all_tex_files = {main_tex}
         main_source = main_tex.read_text(encoding="utf-8", errors="replace")
@@ -167,7 +166,7 @@ def convert(
             flattened, inlined_paths = flatten_tex(main_tex, root, issues)
             main_tex.write_text(flattened, encoding="utf-8")
             _root_resolved = root.resolve()
-            issues.inlined_files = sorted(str(p.relative_to(_root_resolved)) for p in inlined_paths if p.exists())
+            issues.inlined_files = sorted(p.relative_to(_root_resolved).as_posix() for p in inlined_paths if p.exists())
             # After flatten, the only .tex left in the dependency set is the
             # main file; the fragments will be pruned from the output zip.
             all_tex_files = {main_tex}
@@ -197,6 +196,7 @@ def convert(
         used_bib_files = find_used_bib_files(all_sources)
         used_style_files = find_used_style_files(all_sources)
         cited_keys = find_cited_keys(all_sources)
+        is_biblatex = uses_biblatex(all_sources)
 
         # Build whitelist of resolved absolute paths to keep
         whitelist = {p.resolve() for p in all_tex_files if p.exists()}
@@ -216,7 +216,10 @@ def convert(
                 continue
             ext = path.suffix.lower()
             at_root = path.parent == root
-            if ext in {".cls", ".sty"} and path.name in used_style_files and at_root:
+            # `\usepackage{styles/custom}` records "styles/custom.sty", which a real
+            # TeX run resolves relative to the zip root — match that form too.
+            rel = path.relative_to(root).as_posix()
+            if ext in {".cls", ".sty"} and (path.name in used_style_files or rel in used_style_files):
                 whitelist.add(path.resolve())
             elif ext == ".bst" and at_root:
                 whitelist.add(path.resolve())
@@ -252,6 +255,7 @@ def convert(
             used_image_refs=used_image_refs,
             used_bib_files=used_bib_files,
             cited_keys=cited_keys,
+            is_biblatex=is_biblatex,
             resize=resize,
             dry_run=dry_run,
             issues=issues,
@@ -298,6 +302,9 @@ def convert(
                         bbl_content = path.read_text(encoding="utf-8", errors="replace")
                         for m in re.finditer(r"\\bibitem(?:\[[^\]]*\])?\{([^}]+)\}", bbl_content):
                             defined_keys.add(m.group(1).strip())
+                        # biblatex-format .bbl defines entries via \entry{key}{type}{...}
+                        for m in re.finditer(r"\\entry\{([^}]+)\}", bbl_content):
+                            defined_keys.add(m.group(1).strip())
                     except Exception:
                         pass
             if defined_keys:
@@ -324,7 +331,7 @@ def convert(
         # temp dir later.
         issues.input_path = str(input_zip)
         issues.dry_run = dry_run
-        issues.kept_files = sorted(str(p.relative_to(root)) for p in kept_files)
+        issues.kept_files = sorted(p.relative_to(root).as_posix() for p in kept_files)
         issues.removed_files = removed_names
         try:
             issues.sizes_input = input_zip.stat().st_size if input_zip.is_file() else None
@@ -387,7 +394,7 @@ def convert(
         _compile(output_zip, main_hint)
         # Update guide with page count from compiled PDF
         compiled_pdf = output_zip.with_suffix(".pdf")
-        if compiled_pdf.exists() and hasattr(issues, "metadata") and issues.metadata:
+        if compiled_pdf.exists() and issues.metadata:
             pages = _count_pages(str(compiled_pdf))
             if pages:
                 stats = issues.metadata.get("stats", {})

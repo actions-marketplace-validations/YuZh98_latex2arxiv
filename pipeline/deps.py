@@ -7,26 +7,40 @@ def _strip_comments(source: str) -> str:
     return re.sub(r"(?<!\\)%[^\n]*", "", source)
 
 
-def find_included_tex(source: str, base: Path, root: Path, visited: set) -> set:
-    """Recursively find all .tex files reachable via \\input, \\include, \\subfile.
+def find_included_tex(source: str, base: Path, root: Path, visited: set, compile_base: Path | None = None) -> set:
+    """Recursively find all files reachable via \\input, \\include, \\subfile.
     Comments are stripped first so commented-out includes are not followed.
+
+    Targets resolve against the compile root (`compile_base`, defaulting to
+    the top-level `base`) first, then the including file's own directory.
+    Non-.tex targets (e.g. \\input{fig.pgf}) are collected but not recursed into.
     """
+    if compile_base is None:
+        compile_base = base
     found = set()
+    root_resolved = root.resolve()
     for cmd in re.findall(r"\\(?:input|include|subfile)\{([^}]+)\}", _strip_comments(source)):
-        p = Path(cmd) if cmd.endswith(".tex") else Path(cmd + ".tex")
-        # subfile paths are relative to the including file's directory
-        full = (base / p).resolve()
-        try:
-            full.relative_to(root.resolve())
-        except ValueError:
+        names = [cmd] if cmd.endswith(".tex") else [cmd + ".tex", cmd]
+        candidates: list[Path] = []
+        for name in names:
+            for b in (compile_base, base):
+                full = (b / name).resolve()
+                try:
+                    full.relative_to(root_resolved)
+                except ValueError:
+                    continue
+                if full not in candidates:
+                    candidates.append(full)
+        if not candidates:
             continue
+        full = next((c for c in candidates if c.is_file()), candidates[0])
         if full in visited:
             continue
         visited.add(full)
         found.add(full)
-        if full.exists():
+        if full.is_file() and full.suffix in ("", ".tex"):
             child_source = full.read_text(encoding="utf-8", errors="replace")
-            found |= find_included_tex(child_source, full.parent, root, visited)
+            found |= find_included_tex(child_source, full.parent, root, visited, compile_base)
     return found
 
 
@@ -44,7 +58,6 @@ def find_used_images(tex_sources: list[str], tex_dirs: list[Path], root_dir: Pat
         r"|\\begin\{overpic\}(?:\[[^\]]*\])?\{([^}]+)\}"
     )
 
-    # Extract all \graphicspath directories from all sources
     graphic_dirs: list[Path] = []
     for src in tex_sources:
         for m in re.finditer(r"\\graphicspath\{((?:\{[^}]*\})+)\}", _strip_comments(src)):
@@ -104,14 +117,66 @@ def find_used_style_files(tex_sources: list[str]) -> set:
     return used
 
 
+BIBLATEX_PACKAGE_RE = re.compile(r"\\usepackage(?:\[[^\]]*\])?\{[^}]*\bbiblatex\b[^}]*\}")
+ADDBIBRESOURCE_RE = re.compile(r"\\addbibresource(?:\[[^\]]*\])?\{([^}]+)\}")
+
+
+def uses_biblatex(tex_sources: list[str]) -> bool:
+    """True if any source loads the biblatex package or declares a bib resource."""
+    return any(
+        BIBLATEX_PACKAGE_RE.search(src) or ADDBIBRESOURCE_RE.search(src)
+        for src in (_strip_comments(s) for s in tex_sources)
+    )
+
+
+_CITE_PREFIX = r"(?:no|auto|paren|text|smart|super|full|foot(?:full)?)?"
+# Singular cite commands take exactly one key group; commands like \citefield
+# and \citename carry a second mandatory arg that is NOT a key, so only the
+# first brace group is captured. Bracket args are skipped, never scanned.
+# \citestyle takes a natbib style name, not a key, so it is excluded.
+_CITE_SINGLE_RE = re.compile(
+    r"\\" + _CITE_PREFIX + r"cite(?!style)[a-z]*\*?\s*(?:\[[^\]]*\]\s*){0,2}\{([^}]*)\}",
+    re.IGNORECASE,
+)
+# Multicite family (\cites, \autocites, ...) chains {key} groups, each with
+# optional pre/post notes; global affixes come in parentheses.
+_CITE_MULTI_RE = re.compile(
+    r"\\" + _CITE_PREFIX + r"cites\*?"
+    r"(?:\([^)]*\)){0,2}"
+    r"(?P<args>(?:\s*(?:\[[^\]]*\]\s*){0,2}\{[^}]*\})+)",
+    re.IGNORECASE,
+)
+_CITE_MULTI_GROUP_RE = re.compile(r"\{([^}]*)\}")
+_CITE_BRACKET_RE = re.compile(r"\[[^\]]*\]")
+
+
+def _add_keys(raw: str, keys: set) -> None:
+    for key in raw.split(","):
+        key = key.strip()
+        # '*' is \nocite{*}; backslash/space/brace means a matcher swallowed
+        # an adjacent brace group, not a citation key — drop it.
+        if key and key != "*" and not re.search(r"[\\\s{]", key):
+            keys.add(key)
+
+
 def find_cited_keys(tex_sources: list[str]) -> set:
-    """Return set of all citation keys used in \\cite, \\citep, \\citet, etc."""
-    keys = set()
+    """Return set of citation keys from natbib and biblatex cite commands.
+
+    Covers \\cite/\\citep/\\citet..., biblatex \\autocite/\\parencite/\\textcite/
+    \\footcite/\\smartcite/\\supercite/\\fullcite/\\nocite (any capitalization,
+    starred, pre/post notes, multicite forms). '*' from \\nocite{*} is dropped.
+    Not handled: the \\volcite family, whose FIRST mandatory arg is a volume,
+    not a key — supporting it would need per-command argument dispatch.
+    """
+    keys: set = set()
     for src in tex_sources:
         src = _strip_comments(src)
-        for m in re.finditer(r"\\cite[a-z]*\*?\{([^}]+)\}", src):
-            for key in m.group(1).split(","):
-                keys.add(key.strip())
+        for m in _CITE_SINGLE_RE.finditer(src):
+            _add_keys(m.group(1), keys)
+        for m in _CITE_MULTI_RE.finditer(src):
+            args = _CITE_BRACKET_RE.sub("", m.group("args"))
+            for group in _CITE_MULTI_GROUP_RE.finditer(args):
+                _add_keys(group.group(1), keys)
     return keys
 
 
@@ -128,7 +193,7 @@ def find_used_bib_files(tex_sources: list[str]) -> set:
             for name in m.group(1).split(","):
                 name = Path(name.strip()).name
                 used.add(name if name.endswith(".bib") else name + ".bib")
-        for m in re.finditer(r"\\addbibresource\{([^}]+)\}", src):
+        for m in ADDBIBRESOURCE_RE.finditer(src):
             name = Path(m.group(1).strip()).name
             used.add(name if name.endswith(".bib") else name + ".bib")
     return used

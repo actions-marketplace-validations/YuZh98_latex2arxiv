@@ -3,6 +3,7 @@
 Used only when the CLI is invoked with `--compile`. Imported by converter.py
 and called from convert() at the end of a successful conversion."""
 
+import os
 import re
 import sys
 import shutil
@@ -11,17 +12,25 @@ import tempfile
 import subprocess
 from pathlib import Path
 
+from pipeline.deps import uses_biblatex
 from pipeline.types import ConverterError
 
 
 def _open_file(path: Path) -> None:
-    """Open a file with the OS default viewer, cross-platform."""
-    if sys.platform == "win32":
-        subprocess.run(["start", str(path)], shell=True)
-    elif sys.platform == "darwin":
-        subprocess.run(["open", str(path)])
-    else:
-        subprocess.run(["xdg-open", str(path)])
+    """Open a file with the OS default viewer, cross-platform.
+
+    Failure to launch a viewer must never fail an otherwise successful compile,
+    so a missing handler or absent opener binary is reported as a warning."""
+    try:
+        if sys.platform == "win32":
+            # cmd's `start` reads a quoted first argument as a window title.
+            os.startfile(str(path))
+        elif sys.platform == "darwin":
+            subprocess.run(["open", str(path)])
+        else:
+            subprocess.run(["xdg-open", str(path)])
+    except OSError as exc:
+        print(f"  [warn] could not open {path}: {exc}")
 
 
 def _format_pdflatex_errors(stdout: str, max_errors: int = 5) -> str:
@@ -119,11 +128,7 @@ def _compile(output_zip: Path, main_hint: str | None):
         bib_files = list(run_dir.rglob("*.bib"))
         if bib_files:
             main_nc = re.sub(r"(?<!\\)%[^\n]*", "", main_tex.read_text(encoding="utf-8", errors="replace"))
-            uses_biblatex = bool(
-                re.search(r"\\usepackage(?:\[[^\]]*\])?\{[^}]*\bbiblatex\b[^}]*\}", main_nc)
-                or re.search(r"\\addbibresource\{", main_nc)
-            )
-            cmd = "biber" if uses_biblatex else "bibtex"
+            cmd = "biber" if uses_biblatex([main_nc]) else "bibtex"
             print(f"  Running {cmd} ...")
             try:
                 result = subprocess.run([cmd, bib_stem], cwd=run_dir, capture_output=True, timeout=300)

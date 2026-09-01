@@ -373,6 +373,22 @@ class TestApplyConfig:
         assert "second" not in result
         assert "middle" in result
 
+    def test_commands_to_delete_does_not_match_longer_command(self):
+        result = apply_config(r"\notes{stay} \note{go}", {"commands_to_delete": ["note"]})
+        assert r"\notes{stay}" in result
+        assert "go" not in result
+
+    def test_commands_to_unwrap_does_not_match_longer_command(self):
+        result = apply_config(r"\hline stays \hl{keep}", {"commands_to_unwrap": ["hl"]})
+        assert r"\hline stays" in result
+        assert "keep" in result
+        assert r"\hl{" not in result
+
+    def test_commands_to_unwrap_brace_embedded_no_space(self):
+        result = apply_config(r"{\color{red}important}", {"commands_to_unwrap": ["color{red}"]})
+        assert "important" in result
+        assert r"\color" not in result
+
     def test_commands_to_unwrap(self):
         result = apply_config(r"{\color{red} keep this}", {"commands_to_unwrap": ["color{red}"]})
         assert "keep this" in result
@@ -615,6 +631,13 @@ class TestNormalizeBibtex:
         assert "Smith, John" in result
         assert "A Paper" in result
 
+    def test_no_key_entry_private_fields_stripped(self):
+        src = "@misc{orphan,\n  note = {kept},\n  abstract = {should be stripped},\n}\n"
+        out = normalize_bibtex(src)
+        assert "orphan" in out
+        assert "kept" in out
+        assert "should be stripped" not in out
+
 
 # ── Full pipeline integration test ────────────────────────────────────────────
 
@@ -652,6 +675,32 @@ class TestFullPipeline:
         assert "main.tex" in names
         assert "fig.png" in names
         assert "unused.png" not in names
+
+    def test_keeps_nested_input_referenced_from_subdirectory_file(self):
+        files = {
+            "main.tex": r"\documentclass{article}\begin{document}\input{sections/a}\end{document}",
+            "sections/a.tex": r"A\input{sections/b}",
+            "sections/b.tex": "B",
+        }
+        names = self._run(files)
+        assert "sections/b.tex" in names
+
+    def test_keeps_subfile_target_relative_to_including_file(self):
+        files = {
+            "main.tex": r"\documentclass{article}\usepackage{subfiles}\begin{document}\input{parts/outer}\end{document}",
+            "parts/outer.tex": r"\subfile{inner}",
+            "parts/inner.tex": r"\documentclass[../main]{subfiles}\begin{document}inner\end{document}",
+        }
+        names = self._run(files)
+        assert "parts/inner.tex" in names
+
+    def test_keeps_non_tex_input_target(self):
+        files = {
+            "main.tex": r"\documentclass{article}\begin{document}\input{fig.pgf}\end{document}",
+            "fig.pgf": r"\pgfimage{embedded}",
+        }
+        names = self._run(files)
+        assert "fig.pgf" in names
 
     def test_removes_unused_tex(self):
         files = {
@@ -1570,6 +1619,51 @@ class TestCompileMissingTools:
         assert captured.count("pdflatex not found") == 1
 
 
+class TestOpenFile:
+    """`_open_file` picks the right per-platform opener. The Windows branch is
+    unreachable on CI, so it is exercised with a monkeypatched `sys.platform`
+    and a stubbed `os.startfile` (absent outside Windows)."""
+
+    def test_windows_uses_startfile(self, monkeypatch):
+        import pipeline.build as build
+        from pathlib import PureWindowsPath
+
+        # PureWindowsPath, not Path: a host-native Path would render the argument
+        # with the host's separator, so the assertion would only hold on POSIX.
+        calls = []
+        monkeypatch.setattr(build.sys, "platform", "win32")
+        monkeypatch.setattr(build.os, "startfile", lambda p: calls.append(p), raising=False)
+        build._open_file(PureWindowsPath("C:/tmp/out.pdf"))
+        assert calls == ["C:\\tmp\\out.pdf"]
+
+    def test_macos_uses_open(self, monkeypatch):
+        import pipeline.build as build
+        from pathlib import PurePosixPath
+
+        calls = []
+        monkeypatch.setattr(build.sys, "platform", "darwin")
+        monkeypatch.setattr(build.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+        build._open_file(PurePosixPath("/tmp/out.pdf"))
+        assert calls == [["open", "/tmp/out.pdf"]]
+
+    def test_opener_failure_warns_instead_of_raising(self, monkeypatch, capsys):
+        """No registered handler makes `os.startfile` raise; a viewer that cannot
+        be launched must not fail an otherwise successful compile."""
+        import pipeline.build as build
+        from pathlib import PureWindowsPath
+
+        def boom(_p):
+            raise OSError("no application is associated with the file")
+
+        monkeypatch.setattr(build.sys, "platform", "win32")
+        monkeypatch.setattr(build.os, "startfile", boom, raising=False)
+        build._open_file(PureWindowsPath("C:/tmp/out.pdf"))
+
+        captured = capsys.readouterr().out
+        assert "could not open" in captured
+        assert "no application is associated" in captured
+
+
 class TestDemoFlag:
     def test_demo_dry_run(self, tmp_path):
         """--demo --dry-run should print dry-run output and not create any output zip."""
@@ -2452,6 +2546,49 @@ class TestPreFlightChecks:
         Path(zp).unlink(missing_ok=True)
         assert any("referee" in w.lower() for w in issues.warnings), f"Expected referee warning, got: {issues.warnings}"
 
+    def test_commented_referee_not_flagged(self, tmp_path):
+        """A commented-out referee \\documentclass must not warn."""
+        from converter import convert
+
+        src = (
+            "\\documentclass{article}\n"
+            "% \\documentclass[referee]{article} — old draft setting\n"
+            "\\begin{document}x\\end{document}\n"
+        )
+        zp = _make_single_tex_zip(src)
+        out = str(tmp_path / "out.zip")
+        issues = convert(Path(zp), Path(out), dry_run=True)
+        Path(zp).unlink(missing_ok=True)
+        assert not any("referee" in w.lower() for w in issues.warnings), (
+            f"Commented referee option should not warn, got: {issues.warnings}"
+        )
+
+    def test_commented_doublespacing_not_flagged(self, tmp_path):
+        """A commented-out \\doublespacing must not warn."""
+        from converter import convert
+
+        src = "\\documentclass{article}\n% \\doublespacing\n\\begin{document}x\\end{document}\n"
+        zp = _make_single_tex_zip(src)
+        out = str(tmp_path / "out.zip")
+        issues = convert(Path(zp), Path(out), dry_run=True)
+        Path(zp).unlink(missing_ok=True)
+        assert not any("double-spacing" in w.lower() for w in issues.warnings), (
+            f"Commented \\doublespacing should not warn, got: {issues.warnings}"
+        )
+
+    def test_commented_today_not_flagged(self, tmp_path):
+        """A commented-out \\date{\\today} must not warn."""
+        from converter import convert
+
+        src = "\\documentclass{article}\n% \\date{\\today}\n\\begin{document}x\\end{document}\n"
+        zp = _make_single_tex_zip(src)
+        out = str(tmp_path / "out.zip")
+        issues = convert(Path(zp), Path(out), dry_run=True)
+        Path(zp).unlink(missing_ok=True)
+        assert not any("today" in w.lower() for w in issues.warnings), (
+            f"Commented \\today should not warn, got: {issues.warnings}"
+        )
+
 
 # ── T2: subfile + bibliographystyle warnings ──────────────────────────────────
 
@@ -2789,6 +2926,21 @@ class TestPreflightV3:
         issues = convert(zp, out, dry_run=True, **kwargs)
         return issues
 
+    # ── Recorded path shape ──
+
+    def test_paths_recorded_with_posix_separators(self, tmp_path):
+        """Zip member names are always '/'-separated, so the recorded paths that
+        index back into the zip must be too. Coincides with `str()` on POSIX;
+        guards the Windows behaviour."""
+        files = {
+            "paper/main.tex": r"\documentclass{article}\begin{document}x\end{document}",
+            "figures/note.tex": r"\newcommand{\foo}{bar}",
+        }
+        issues = self._run(files, tmp_path)
+        assert issues.main_tex == "paper/main.tex"
+        assert all("\\" not in k for k in issues.kept_files)
+        assert all("\\" not in r for r in issues.removed_files)
+
     # ── Hidden dot-files ──
 
     def test_hidden_file_warns(self, tmp_path):
@@ -2808,6 +2960,17 @@ class TestPreflightV3:
         }
         issues = self._run(files, tmp_path)
         assert any("hidden file" in w for w in issues.warnings)
+
+    def test_hidden_dir_warns_once_for_many_files(self, tmp_path):
+        files = {
+            "main.tex": r"\documentclass{article}\begin{document}hi\end{document}",
+            ".cache/a.txt": "A",
+            ".cache/b.txt": "B",
+            ".cache/deep/c.txt": "C",
+        }
+        issues = self._run(files, tmp_path)
+        hidden = [w for w in issues.warnings if "hidden file" in w]
+        assert len(hidden) == 1
 
     def test_no_hidden_file_no_warn(self, tmp_path):
         """Normal files should not trigger hidden-file warning."""
@@ -2910,6 +3073,46 @@ class TestPreflightV3:
         issues = self._run(files, tmp_path)
         assert not any("psfig.sty" in e for e in issues.errors)
 
+    # ── Used .sty/.cls in subdirectories ──
+
+    def test_used_subdir_sty_kept(self, tmp_path):
+        issues = self._run(
+            {
+                "main.tex": (
+                    r"\documentclass{article}\usepackage{custom}"
+                    r"\begin{document}x\end{document}"
+                ),
+                "styles/custom.sty": "% custom package\n",
+            },
+            tmp_path,
+        )
+        assert any(k.endswith("custom.sty") for k in issues.kept_files)
+
+    def test_path_qualified_sty_kept(self, tmp_path):
+        """`\\usepackage{styles/custom}` is what a real TeX run resolves from the
+        zip root, so the path-qualified reference must whitelist the file too."""
+        issues = self._run(
+            {
+                "main.tex": (
+                    r"\documentclass{article}\usepackage{styles/custom}"
+                    r"\begin{document}x\end{document}"
+                ),
+                "styles/custom.sty": "% custom package\n",
+            },
+            tmp_path,
+        )
+        assert any(k.endswith("styles/custom.sty") for k in issues.kept_files)
+
+    def test_unused_subdir_sty_still_pruned(self, tmp_path):
+        issues = self._run(
+            {
+                "main.tex": r"\documentclass{article}\begin{document}x\end{document}",
+                "styles/unused.sty": "% never loaded\n",
+            },
+            tmp_path,
+        )
+        assert not any(k.endswith("unused.sty") for k in issues.kept_files)
+
     # ── -eps-converted-to.pdf artifacts ──
 
     def test_eps_converted_to_pdf_warns(self, tmp_path):
@@ -2971,6 +3174,30 @@ class TestPreflightV3:
         _check_oversized_images({png_path}, issues)
         assert not any("megapixels" in w for w in issues.warnings)
 
+    def test_decompression_bomb_png_warns(self, tmp_path):
+        """PNG whose declared size trips Pillow's bomb guard should still warn."""
+        import struct
+        import zlib
+
+        from pipeline.preflight import _check_oversized_images
+        from pipeline.types import Issues
+
+        def chunk(tag: bytes, data: bytes) -> bytes:
+            return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data))
+
+        w = h = 20000
+        png_path = tmp_path / "huge.png"
+        png_path.write_bytes(
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"\x00" * 10))
+            + chunk(b"IEND", b"")
+        )
+
+        issues = Issues()
+        _check_oversized_images({png_path}, issues)
+        assert any("huge.png" in w_ for w_ in issues.warnings)
+
     # ── .eps warning suppressed for latex+dvips mode ──
 
     def test_eps_no_warn_with_00readme_latex(self, tmp_path):
@@ -3025,6 +3252,19 @@ class TestPreflightV3:
         issues = self._run(files, tmp_path)
         assert not any(".eps image found" in w for w in issues.warnings)
 
+    def test_00readme_pdflatex_does_not_enable_dvips_mode(self, tmp_path):
+        """00README.XXX declaring pdflatex must not be misread as latex+dvips."""
+        files = {
+            "main.tex": (
+                r"\documentclass{article}\usepackage{graphicx}"
+                r"\begin{document}\includegraphics{fig.eps}\end{document}"
+            ),
+            "fig.eps": b"%!PS-Adobe-3.0 EPSF-3.0",
+            "00README.XXX": "pdflatex\n",
+        }
+        issues = self._run(files, tmp_path)
+        assert any(".eps image found" in w for w in issues.warnings)
+
     # ── Softened biblatex message ──
 
     def test_biblatex_message_mentions_native_biber(self, tmp_path):
@@ -3041,3 +3281,249 @@ class TestPreflightV3:
         bib_warns = [w for w in issues.warnings if "biblatex" in w]
         assert bib_warns
         assert "natively" in bib_warns[0]
+
+
+class TestUsesBiblatex:
+    def test_detects_usepackage_with_options(self):
+        from pipeline.deps import uses_biblatex
+
+        assert uses_biblatex([r"\usepackage[backend=biber,style=authoryear]{biblatex}"])
+
+    def test_detects_bare_usepackage(self):
+        from pipeline.deps import uses_biblatex
+
+        assert uses_biblatex([r"\usepackage{biblatex}"])
+
+    def test_detects_in_package_list(self):
+        from pipeline.deps import uses_biblatex
+
+        assert uses_biblatex([r"\usepackage{a,biblatex,b}"])
+
+    def test_detects_addbibresource(self):
+        from pipeline.deps import uses_biblatex
+
+        assert uses_biblatex([r"\addbibresource{refs.bib}"])
+
+    def test_detects_addbibresource_with_options(self):
+        from pipeline.deps import uses_biblatex
+
+        assert uses_biblatex([r"\addbibresource[location=local]{refs.bib}"])
+
+    def test_negative_plain_bibtex(self):
+        from pipeline.deps import uses_biblatex
+
+        assert not uses_biblatex([r"\bibliographystyle{plain}", r"\bibliography{refs}"])
+
+    def test_negative_biblatex_substring(self):
+        from pipeline.deps import uses_biblatex
+
+        assert not uses_biblatex([r"\usepackage{biblatexish}"])
+
+    def test_addbibresource_optional_args_bib_discovery(self):
+        assert find_used_bib_files([r"\addbibresource[location=local]{bib/refs.bib}"]) == {"refs.bib"}
+
+
+class TestFindCitedKeysBiblatex:
+    def _keys(self, src):
+        from pipeline.deps import find_cited_keys
+
+        return find_cited_keys([src])
+
+    def test_autocite(self):
+        assert self._keys(r"\autocite{einstein1905}") == {"einstein1905"}
+
+    def test_parencite_with_notes(self):
+        assert self._keys(r"\parencite[see][p.~5]{knuth}") == {"knuth"}
+
+    def test_textcite_capitalized(self):
+        assert self._keys(r"\Textcite{doe2024}") == {"doe2024"}
+
+    def test_footcite_smartcite_supercite_fullcite(self):
+        assert self._keys(r"\footcite{a} \smartcite{b} \supercite{c} \fullcite{d}") == {"a", "b", "c", "d"}
+
+    def test_multicite(self):
+        assert self._keys(r"\cites{a}{b}{c}") == {"a", "b", "c"}
+
+    def test_multicite_with_notes(self):
+        assert self._keys(r"\autocites[x][y]{a}[z]{b}") == {"a", "b"}
+
+    def test_multicite_global_affixes(self):
+        assert self._keys(r"\cites(pre)(post){a}{b}") == {"a", "b"}
+
+    def test_nocite_key(self):
+        assert self._keys(r"\nocite{hidden2020}") == {"hidden2020"}
+
+    def test_nocite_star_discarded(self):
+        assert self._keys(r"\nocite{*}") == set()
+
+    def test_comma_split_in_single_group(self):
+        assert self._keys(r"\autocite{a, b,c}") == {"a", "b", "c"}
+
+    def test_natbib_regression(self):
+        assert self._keys(r"\citep[e.g.][]{x} \citet*{y} \cite{z}") == {"x", "y", "z"}
+
+    def test_volcite_out_of_scope_no_crash(self):
+        assert self._keys(r"\volcite{2}{key}") == set()
+
+    def test_starred_with_notes(self):
+        assert self._keys(r"\cite*[p.1]{k}") == {"k"}
+
+    def test_following_brace_group_not_swallowed(self):
+        assert self._keys(r"\cite{a} {\bf note}") == {"a"}
+
+
+class TestBiblatexBblAndPreflight:
+    """biblatex .bbl parsing in the undefined-citation check plus the
+    bbl-format-version / backend-mismatch / bundled-sty pre-flight warns."""
+
+    _BBL_33 = "% $ biblatex auxiliary file $\n% $ biblatex bbl format version 3.3 $\n\\entry{einstein1905}{article}{}\n"
+    _BBL_32 = "% $ biblatex auxiliary file $\n% $ biblatex bbl format version 3.2 $\n\\entry{einstein1905}{article}{}\n"
+    _BBL_28 = "% $ biblatex auxiliary file $\n% $ biblatex bbl format version 2.8 $\n\\entry{einstein1905}{article}{}\n"
+    _BBL_BIBTEX = "\\begin{thebibliography}{9}\n\\bibitem{einstein1905} E.\n\\end{thebibliography}\n"
+
+    def _main_tex(self, cites=r"\autocite{einstein1905}"):
+        return (
+            "\\documentclass{article}\n"
+            "\\usepackage[backend=biber]{biblatex}\n"
+            "\\addbibresource{refs.bib}\n"
+            "\\begin{document}\n"
+            f"{cites}\n"
+            "\\printbibliography\n"
+            "\\end{document}\n"
+        )
+
+    def _run(self, files, tmp_path):
+        from converter import convert
+
+        zp = tmp_path / "in.zip"
+        with zipfile.ZipFile(zp, "w") as zf:
+            for name, content in files.items():
+                zf.writestr(name, content)
+        out = tmp_path / "out.zip"
+        return convert(zp, out, dry_run=True)
+
+    # ── undefined-citation check reads \entry keys ──
+
+    def test_bbl_entry_keys_count_as_defined(self, tmp_path):
+        files = {
+            "main.tex": self._main_tex(r"\autocite{einstein1905} \autocite{missingkey}"),
+            "main.bbl": self._BBL_33,
+        }
+        issues = self._run(files, tmp_path)
+        undef = [w for w in issues.warnings if "undefined citation" in w]
+        assert undef, "expected an undefined-citation warn for missingkey"
+        assert "missingkey" in undef[0]
+        assert "einstein1905" not in undef[0]
+
+    # ── bbl format version ──
+
+    def test_current_format_silent(self, tmp_path):
+        files = {"main.tex": self._main_tex(), "main.bbl": self._BBL_33}
+        issues = self._run(files, tmp_path)
+        assert not any("bbl format" in w for w in issues.warnings)
+
+    def test_tl2023_format_warns(self, tmp_path):
+        files = {"main.tex": self._main_tex(), "main.bbl": self._BBL_32}
+        issues = self._run(files, tmp_path)
+        assert any("TL2023" in w for w in issues.warnings)
+
+    def test_old_format_warns_regenerate(self, tmp_path):
+        files = {"main.tex": self._main_tex(), "main.bbl": self._BBL_28}
+        issues = self._run(files, tmp_path)
+        assert any("bbl format 2.8" in w and "regenerate" in w for w in issues.warnings)
+
+    def test_bibtex_format_bbl_warns_mismatch(self, tmp_path):
+        files = {"main.tex": self._main_tex(), "main.bbl": self._BBL_BIBTEX}
+        issues = self._run(files, tmp_path)
+        assert any("BibTeX-format" in w for w in issues.warnings)
+
+    def test_headerless_bbl_silent(self, tmp_path):
+        files = {"main.tex": self._main_tex(), "main.bbl": "\\entry{einstein1905}{article}{}\n"}
+        issues = self._run(files, tmp_path)
+        assert not any("bbl format" in w or "BibTeX-format" in w for w in issues.warnings)
+
+    def test_missing_bbl_existing_warn_kept(self, tmp_path):
+        files = {"main.tex": self._main_tex(), "refs.bib": "@article{einstein1905, title={X}}"}
+        issues = self._run(files, tmp_path)
+        assert any("no main.bbl shipped" in w for w in issues.warnings)
+
+    # ── bundled biblatex.sty ──
+
+    def test_bundled_biblatex_sty_warns(self, tmp_path):
+        files = {
+            "main.tex": self._main_tex(),
+            "main.bbl": self._BBL_33,
+            "biblatex.sty": "% outdated bundled copy",
+        }
+        issues = self._run(files, tmp_path)
+        assert any("bundled biblatex.sty" in w for w in issues.warnings)
+
+    def test_no_bundled_sty_silent(self, tmp_path):
+        files = {"main.tex": self._main_tex(), "main.bbl": self._BBL_33}
+        issues = self._run(files, tmp_path)
+        assert not any("bundled biblatex.sty" in w for w in issues.warnings)
+
+
+class TestBiblatexKeywordsGuard:
+    _KEYWORDS_BIB = """@article{k1,
+  author = {A},
+  title = {T},
+  year = {2020},
+  keywords = {physics,primary},
+  abstract = {secret draft notes},
+}"""
+
+    def test_keywords_stripped_for_plain_bibtex(self):
+        result = normalize_bibtex(self._KEYWORDS_BIB)
+        assert "keywords" not in result
+
+    def test_keywords_kept_for_biblatex(self):
+        result = normalize_bibtex(self._KEYWORDS_BIB, is_biblatex=True)
+        assert "keywords" in result
+        assert "abstract" not in result
+
+
+class TestCiteRegexPrecision:
+    """Pinning tests for over-capture fixes: field-accessor commands, adjacent
+    bare brace groups, and braced prenotes must not yield phantom keys."""
+
+    def _keys(self, src):
+        from pipeline.deps import find_cited_keys
+
+        return find_cited_keys([src])
+
+    def test_citefield_second_arg_not_a_key(self):
+        assert self._keys(r"\citefield{key}{title}") == {"key"}
+
+    def test_citename_second_arg_not_a_key(self):
+        assert self._keys(r"\citename{key}{family}") == {"key"}
+
+    def test_adjacent_bare_group_after_singular_cite(self):
+        assert self._keys(r"\citet{smith} {2020}") == {"smith"}
+
+    def test_braced_prenote_contents_not_scanned(self):
+        assert self._keys(r"\autocite[{see, e.g.}][]{key}") == {"key"}
+
+    def test_fullcites_multicite(self):
+        assert self._keys(r"\fullcites{a}{b}") == {"a", "b"}
+
+    def test_multicite_notes_not_scanned(self):
+        assert self._keys(r"\autocites[{cf. x}]{a}[y]{b}") == {"a", "b"}
+
+    def test_citestyle_not_a_citation(self):
+        assert self._keys(r"\citestyle{plainnat}") == set()
+
+    def test_citet_still_matches(self):
+        assert self._keys(r"\citet{knuth84}") == {"knuth84"}
+
+
+class TestUsesBiblatexComments:
+    def test_commented_out_biblatex_not_detected(self):
+        from pipeline.deps import uses_biblatex
+
+        assert not uses_biblatex(["% \\usepackage[backend=biber]{biblatex}\n\\usepackage{natbib}"])
+
+    def test_commented_addbibresource_not_detected(self):
+        from pipeline.deps import uses_biblatex
+
+        assert not uses_biblatex(["% \\addbibresource{refs.bib}"])

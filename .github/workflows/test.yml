@@ -11,8 +11,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install pytest pytest-bdd bibtexparser Pillow pyyaml regex 'ruff==0.11.*' pytest-cov mcp fastmcp
@@ -30,8 +30,8 @@ jobs:
   package:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Build wheel
@@ -52,8 +52,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install package
@@ -72,7 +72,12 @@ jobs:
           grep -F "08-flatten-basic" /tmp/fixture_out.txt | grep -F "✓ clean"
           grep -F "09-flatten-subfile" /tmp/fixture_out.txt | grep -F "✓ clean"
           grep -F "10-multifile-graphicspath" /tmp/fixture_out.txt | grep -F "✓ clean"
-          grep -F "10 fixtures ran" /tmp/fixture_out.txt
+          grep -F "11-biblatex-bbl" /tmp/fixture_out.txt | grep -F "1 warning"
+          grep -F "12-plain-bibtex-natbib" /tmp/fixture_out.txt | grep -F "✓ clean"
+          grep -F "13-subdir-styles" /tmp/fixture_out.txt | grep -F "1 warning"
+          grep -F "14-xelatex-00readme" /tmp/fixture_out.txt | grep -F "✓ clean"
+          grep -F "15-archive-layout-warns" /tmp/fixture_out.txt | grep -F "2 warning"
+          grep -F "15 fixtures ran" /tmp/fixture_out.txt
 
   compile-smoke:
     # Live --compile end-to-end test against real TeX Live + biber. Catches
@@ -82,8 +87,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install TeX Live + biber
@@ -142,8 +147,8 @@ jobs:
   deprecation-strict:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: pip install pytest pytest-bdd bibtexparser Pillow pyyaml regex mcp fastmcp
@@ -158,8 +163,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install local latex2arxiv (so the action's install becomes a no-op)
@@ -195,8 +200,8 @@ jobs:
     # release time covers the live-Chrome behavior.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '20'
       - name: Install browser-extension test deps
